@@ -1,0 +1,8 @@
+xarray==2024.2.0
+dask==2024.4.1
+dask[distributed]==2024.4.1
+s3fs==2024.3.1
+zarr==2.17.1
+hydrotools
+hydroeval
+netcdf4
