@@ -12,7 +12,8 @@ import numpy as np
 from hydrotools.nwis_client import IVDataService
 import hydroeval as he
 from colorama import Fore, Style, init
-from output_formatter import write_output
+from ngiab_eval.output_formatter import write_output
+import argparse
 
 # Initialize colorama
 init(autoreset=True)
@@ -127,10 +128,49 @@ def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
+# def plot_streamflow(df, gage):
+#     import matplotlib.pyplot as plt
+
+#     plt.plot(df["current_time"], df["streamflow"], label="NWM")
+#     plt.plot(df["current_time"], df["value"], label="USGS")
+#     plt.plot(df["current_time"], df["flow"], label="NGEN")
+#     plt.legend()
+#     plt.title(f"Streamflow for {gage}")
+#     # save the plot
+#     plt.savefig(f"gage-{gage}_streamflow.png")
+
+
+def parse_arguments() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Subsetting hydrofabrics, forcing generation, and realization creation"
+    )
+    parser.add_argument(
+        "-i",
+        "--input_file",
+        type=str,
+        help="Path to a csv or txt file containing a newline separated list of catchment IDs, when used with -l, the file should contain lat/lon pairs",
+    )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="enable debug logging",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
     setup_logging()
+    args = parse_arguments()
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    if not args.input_file:
+        logger.error("No input file provided")
+        exit(1)
+    folder_to_eval = Path(args.input_file)
     logger.debug("Starting main.py")
-    folder_to_eval = Path("/home/josh/ngiab_preprocess_output/gage-10154200")
+    # folder_to_eval = Path("/home/josh/ngiab_preprocess_output/gage-10154200")
 
     # get gages in folder, flowpath_attributes.rl_gages
     logger.debug("Getting gages from hydrofabric")
@@ -179,5 +219,5 @@ if __name__ == "__main__":
         ngen_kge = he.evaluator(he.kge, new_df["NGEN"], new_df["USGS"])
 
         # pickle ngen_kge
-        write_output(gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
+        write_output(folder_to_eval, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
         logger.info(f"Finished processing {gage}")

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import dataclasses
 import numpy as np
 import json
+from pathlib import Path
 
 
 class EnhancedJSONEncoder(json.JSONEncoder):
@@ -35,9 +36,21 @@ class results:
         self.nse = nse_output[0]
 
 
-def write_output(gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge):
+def create_output_folders(output_folder):
+    output_folder = Path(output_folder)
+    eval_folder = output_folder / "eval"
+    json_folder = eval_folder / "json"
+    # plot_folder = eval_folder / "plots"
+    folders = [output_folder, eval_folder, json_folder]
+    for folder in folders:
+        folder.mkdir(exist_ok=True)
+
+
+def write_output(output_folder, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge):
+    create_output_folders(output_folder)
     output = {}
     output["ngen"] = results(ngen_kge, ngen_nse)
     output["nwm"] = results(nwm_kge, nwm_nse)
-    with open(f"gage-{gage}_results.json", "w") as f:
+    output_file = Path(output_folder) / "eval" / "json" / f"gage-{gage}_results.json"
+    with open(output_file, "w") as f:
         f.write(json.dumps(output, cls=EnhancedJSONEncoder, indent=4))

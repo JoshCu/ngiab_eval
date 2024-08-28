@@ -1,0 +1,45 @@
+[tool.black]
+line-length = 99
+
+# includes the data_sources files
+[tool.setuptools]
+include-package-data = true
+
+# [tool.setuptools.packages.find]
+# where = ["modules"]
+# namespaces = true
+# exclude = ["tests*"]
+
+[project]
+name = "ngiab_eval"
+#version = "0.0.1"
+dynamic = ["version"]
+authors = [{ name = "Josh Cunningham", email = "jcunningham8@ua.edu" }]
+description = "Basic KGE and NSE evaluation for the NGIAB project"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "xarray==2024.2.0",
+    "dask==2024.4.1",
+    "dask[distributed]==2024.4.1",
+    "s3fs==2024.3.1",
+    "zarr==2.17.1",
+    "hydrotools",
+    "hydroeval",
+    "netcdf4",
+    "colorama",
+]
+
+[project.urls]
+Homepage = "https://github.com/JoshCu/ngiab_eval"
+Issues = "https://github.com/JoshCu/ngiab_eval/issues"
+
+[build-system]
+# scm adds files tracked by git to the package
+requires = ["setuptools>=69.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
