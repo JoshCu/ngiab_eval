@@ -3,7 +3,7 @@ import os
 import s3fs
 import xarray as xr
 import logging
-from dask.distributed import Client, LocalCluster
+# from dask.distributed import Client, LocalCluster
 from pathlib import Path
 import pandas as pd
 import glob
@@ -11,19 +11,23 @@ import json
 import numpy as np
 from hydrotools.nwis_client import IVDataService
 import hydroeval as he
-import sys
+from colorama import Fore, Style, init
 
-logging.basicConfig(level=logging.INFO)
+# Initialize colorama
+init(autoreset=True)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     """Load zarr datasets from S3 within the specified time range."""
     # if a LocalCluster is not already running, start one
-    try:
-        Client.current()
-    except ValueError:
-        cluster = LocalCluster()
-        client = Client(cluster)
+    # try:
+    #     Client.current()
+    # except ValueError:
+    #     cluster = LocalCluster()
+    #     client = Client(cluster)
     store = s3fs.S3Map(
         f"s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
         s3=s3fs.S3FileSystem(anon=True),
@@ -96,25 +100,56 @@ def get_simulation_start_end_time(folder_to_eval):
     return start, end
 
 
+class ColoredFormatter(logging.Formatter):
+    def format(self, record):
+        message = super().format(record)
+        if record.levelno == logging.DEBUG:
+            return f"{Fore.BLUE}{message}{Style.RESET_ALL}"
+        if record.levelno == logging.WARNING:
+            return f"{Fore.YELLOW}{message}{Style.RESET_ALL}"
+        if record.levelno == logging.INFO:
+            return f"{Fore.GREEN}{message}{Style.RESET_ALL}"
+        return message
+
+
+def setup_logging() -> None:
+    """Set up logging configuration with green formatting."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        ColoredFormatter("%(asctime)s - %(levelname)s - %(funcName)s - %(message)s")
+    )
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+
 if __name__ == "__main__":
+    setup_logging()
+    logger.debug("Starting main.py")
     folder_to_eval = Path("/home/josh/ngiab_preprocess_output/gage-10154200")
 
     # get gages in folder, flowpath_attributes.rl_gages
+    logger.debug("Getting gages from hydrofabric")
     wb_gage_pairs = get_gages_from_hydrofabric(folder_to_eval)
     gages = [pair[1] for pair in wb_gage_pairs]
-
-    logging.info(f"Found {len(wb_gage_pairs)} gages in folder")
-
+    logger.info(f"Found {len(wb_gage_pairs)} gages in folder")
+    logger.debug(f"getting simulation start and end time")
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
-    logging.info(f"Simulation start time: {start_time}, end time: {end_time}")
+    logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
 
-    logging.info("Downloaded NWM output")
-    service = IVDataService()
+    logger.info("Downloaded NWM output")
     for wb_id, gage in wb_gage_pairs:
+        logger.debug(f"Processing {gage}")
+        logger.debug(f"Downloading USGS data for {gage}")
+        service = IVDataService()
         usgs_data = service.get(sites=gage, startDT="2010-01-01", endDT="2010-01-10")
-        gage_data = download_nwm_output(gage, start_time, end_time)
+        service._restclient.close()
+        logger.debug(f"Downloaded USGS data for {gage}")
+        logger.debug(f"Downloading NWM data for {gage}")
+        nwm_data = download_nwm_output(gage, start_time, end_time)
+        logger.debug(f"Downloaded NWM data for {gage}")
+        logger.debug(f"Getting simulation output for {gage}")
         simulation_output = get_simulation_output(wb_id, folder_to_eval)
-
+        logger.debug(f"Got simulation output for {gage}")
+        logger.debug(f"Merging simulation and gage data for {gage}")
         new_df = pd.merge(
             simulation_output,
             usgs_data,
@@ -122,14 +157,16 @@ if __name__ == "__main__":
             right_on="value_time",
             how="inner",
         )
+        logger.debug(f"Merged in nwm data for {gage}")
         new_df = pd.merge(
-            new_df, gage_data.to_dataframe(), left_on="current_time", right_on="time", how="inner"
+            new_df, nwm_data.to_dataframe(), left_on="current_time", right_on="time", how="inner"
         )
+        logger.debug(f"Merging complete for {gage}")
         new_df = new_df.dropna()
         # drop everything except the columns we want
         new_df = new_df[["flow", "value", "streamflow"]]
         new_df.columns = ["NGEN", "USGS", "NWM"]
-
+        logger.debug(f"Calculating NSE and KGE for {gage}")
         nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
         ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
         nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
@@ -147,6 +184,4 @@ if __name__ == "__main__":
             f.write(f"ngen_kge_a: {ngen_kge[2][0]}\n")
             f.write(f"ngen_kge_b: {ngen_kge[3][0]}")
 
-        logging.info(f"Finished processing {gage}")
-    Client.current().close()
-    sys.exit(0)
+        logger.info(f"Finished processing {gage}")
