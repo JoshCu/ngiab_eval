@@ -13,6 +13,7 @@ from hydrotools.nwis_client import IVDataService
 import hydroeval as he
 from colorama import Fore, Style, init
 from ngiab_eval.output_formatter import write_output
+from ngiab_eval.gage_to_feature_id import feature_ids
 import argparse
 
 # Initialize colorama
@@ -35,21 +36,13 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
         f"s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
         s3=s3fs.S3FileSystem(anon=True),
     )
+
     logger.debug("Opening zarr store")
     dataset = xr.open_zarr(store, consolidated=True)
-    logger.debug("Selecting time slice")
-    dataset = dataset.sel(time=slice(start_time, end_time))
 
-    # the gage_id is stored as 15 bytes and isn't indexed by default
-    # e.g. 10154200 -> b'0000000010154200'
-    gage = np.bytes_(gage.rjust(15))
-
-    # the indexer needs to be computed before the dataset is filtered as gage_id is a dask array
-    logger.debug("Computing indexer")
-    indexer = (dataset.gage_id == gage).compute()
-
-    logger.debug("Filtering dataset")
-    dataset = dataset.where(indexer, drop=True)
+    # select the feature_id
+    logger.debug("Selecting feature_id")
+    dataset = dataset.sel(time=slice(start_time, end_time), feature_id=feature_ids[gage])
 
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
