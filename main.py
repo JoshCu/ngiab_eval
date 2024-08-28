@@ -12,6 +12,7 @@ import numpy as np
 from hydrotools.nwis_client import IVDataService
 import hydroeval as he
 from colorama import Fore, Style, init
+from output_formatter import write_output
 
 # Initialize colorama
 init(autoreset=True)
@@ -177,16 +178,6 @@ if __name__ == "__main__":
         nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
         ngen_kge = he.evaluator(he.kge, new_df["NGEN"], new_df["USGS"])
 
-        with open(f"gage-{gage}_results.txt", "w") as f:
-            f.write(f"nwm_nse: {nwm_nse}\n")
-            f.write(f"nwm_kge: {nwm_kge[0][0]}\n")
-            f.write(f"nwm_kge_r: {nwm_kge[1][0]}\n")
-            f.write(f"nwm_kge_a: {nwm_kge[2][0]}\n")
-            f.write(f"nwm_kge_b: {nwm_kge[3][0]}\n")
-            f.write(f"ngen_nse: {ngen_nse}\n")
-            f.write(f"ngen_kge: {ngen_kge[0][0]}\n")
-            f.write(f"ngen_kge_r: {ngen_kge[1][0]}\n")
-            f.write(f"ngen_kge_a: {ngen_kge[2][0]}\n")
-            f.write(f"ngen_kge_b: {ngen_kge[3][0]}")
-
+        # pickle ngen_kge
+        write_output(gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
         logger.info(f"Finished processing {gage}")

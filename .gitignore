@@ -1,3 +1,4 @@
 env
 *.sqlite
-*_results.txt
+*_results.json
+__pycache__
