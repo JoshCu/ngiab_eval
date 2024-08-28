@@ -3,7 +3,7 @@ import os
 import s3fs
 import xarray as xr
 import logging
-# from dask.distributed import Client, LocalCluster
+from dask.distributed import Client, LocalCluster
 from pathlib import Path
 import pandas as pd
 import glob
@@ -23,16 +23,19 @@ logger.setLevel(logging.DEBUG)
 def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     """Load zarr datasets from S3 within the specified time range."""
     # if a LocalCluster is not already running, start one
-    # try:
-    #     Client.current()
-    # except ValueError:
-    #     cluster = LocalCluster()
-    #     client = Client(cluster)
+    try:
+        Client.current()
+    except ValueError:
+        cluster = LocalCluster()
+        client = Client(cluster)
+    logger.debug("Creating s3fs object")
     store = s3fs.S3Map(
         f"s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
         s3=s3fs.S3FileSystem(anon=True),
     )
+    logger.debug("Opening zarr store")
     dataset = xr.open_zarr(store, consolidated=True)
+    logger.debug("Selecting time slice")
     dataset = dataset.sel(time=slice(start_time, end_time))
 
     # the gage_id is stored as 15 bytes and isn't indexed by default
@@ -40,16 +43,18 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     gage = np.bytes_(gage.rjust(15))
 
     # the indexer needs to be computed before the dataset is filtered as gage_id is a dask array
+    logger.debug("Computing indexer")
     indexer = (dataset.gage_id == gage).compute()
 
+    logger.debug("Filtering dataset")
     dataset = dataset.where(indexer, drop=True)
 
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
 
     dataset["streamflow"] = dataset["streamflow"] * 0.0283168
-
-    return dataset
+    logger.debug("Returning dataset")
+    return dataset.compute()
 
 
 def get_gages_from_hydrofabric(folder_to_eval):
