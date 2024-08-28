@@ -19,7 +19,7 @@ import argparse
 init(autoreset=True)
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
@@ -54,7 +54,6 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
 
-    dataset["streamflow"] = dataset["streamflow"] * 0.0283168
     logger.debug("Returning dataset")
     return dataset.compute()
 
@@ -128,16 +127,32 @@ def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
-# def plot_streamflow(df, gage):
-#     import matplotlib.pyplot as plt
+def plot_streamflow(output_folder, df, gage):
+    try:
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.error(
+            "seaborn and matplotlib are required to plot streamflow, pip install ngiab_eval[plot]"
+        )
+        return
 
-#     plt.plot(df["current_time"], df["streamflow"], label="NWM")
-#     plt.plot(df["current_time"], df["value"], label="USGS")
-#     plt.plot(df["current_time"], df["flow"], label="NGEN")
-#     plt.legend()
-#     plt.title(f"Streamflow for {gage}")
-#     # save the plot
-#     plt.savefig(f"gage-{gage}_streamflow.png")
+    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    for source in ["NWM", "USGS", "NGEN"]:
+        sns.lineplot(x="time", y=source, data=df, label=source, ax=ax)
+
+    ax.set(title=f"Streamflow for {gage}", xlabel="Time", ylabel="Streamflow (m³ s⁻¹)")
+    ax.legend(title="Source")
+    plt.xticks(rotation=45, ha="right")
+
+    plt.tight_layout()
+
+    plot_folder = Path(output_folder) / "eval" / "plots"
+    plot_folder.mkdir(exist_ok=True, parents=True)
+    plt.savefig(plot_folder / f"gage-{gage}_streamflow.png")
+    plt.close(fig)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -156,6 +171,12 @@ def parse_arguments() -> argparse.Namespace:
         "--debug",
         action="store_true",
         help="enable debug logging",
+    )
+    parser.add_argument(
+        "-p",
+        "--plot",
+        action="store_true",
+        help="Plot streamflow data",
     )
     return parser.parse_args()
 
@@ -185,7 +206,8 @@ if __name__ == "__main__":
     for wb_id, gage in wb_gage_pairs:
         logger.debug(f"Processing {gage}")
         logger.debug(f"Downloading USGS data for {gage}")
-        service = IVDataService()
+        cache_path = folder_to_eval / "nwisiv_cache.sqlite"
+        service = IVDataService(cache_filename=cache_path)
         usgs_data = service.get(sites=gage, startDT="2010-01-01", endDT="2010-01-10")
         service._restclient.close()
         logger.debug(f"Downloaded USGS data for {gage}")
@@ -210,14 +232,25 @@ if __name__ == "__main__":
         logger.debug(f"Merging complete for {gage}")
         new_df = new_df.dropna()
         # drop everything except the columns we want
-        new_df = new_df[["flow", "value", "streamflow"]]
-        new_df.columns = ["NGEN", "USGS", "NWM"]
+        new_df = new_df[["current_time", "flow", "value", "streamflow"]]
+        new_df.columns = ["time", "NGEN", "USGS", "NWM"]
+        # convert USGS to cms
+        new_df["USGS"] = new_df["USGS"] * 0.0283168
         logger.debug(f"Calculating NSE and KGE for {gage}")
         nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
         ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
         nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
         ngen_kge = he.evaluator(he.kge, new_df["NGEN"], new_df["USGS"])
 
-        # pickle ngen_kge
         write_output(folder_to_eval, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
+
+        logger.debug("plotting streamflow")
+        if args.plot:
+            plot_streamflow(folder_to_eval, new_df, gage)
+
+        if args.debug:
+            debug_output = folder_to_eval / "eval" / "debug"
+            debug_output.mkdir(exist_ok=True)
+            new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
+
         logger.info(f"Finished processing {gage}")

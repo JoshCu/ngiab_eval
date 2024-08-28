@@ -35,6 +35,9 @@ dependencies = [
     "colorama",
 ]
 
+[project.optional-dependencies]
+plot = ["seaborn","matplotlib"]
+
 [project.urls]
 Homepage = "https://github.com/JoshCu/ngiab_eval"
 Issues = "https://github.com/JoshCu/ngiab_eval/issues"
