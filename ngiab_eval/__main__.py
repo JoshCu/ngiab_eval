@@ -185,18 +185,27 @@ if __name__ == "__main__":
     logger.debug("Starting main.py")
     logger.debug("Getting gages from hydrofabric")
     wb_gage_pairs = get_gages_from_hydrofabric(folder_to_eval)
-    gages = [pair[1] for pair in wb_gage_pairs]
-    logger.info(f"Found {len(wb_gage_pairs)} gages in folder")
+    all_gages = {}
+    for wb_id, g in wb_gage_pairs:
+        gages = g.split(",")
+        for gage in gages:
+            all_gages[gage] = wb_id
+
+    logger.info(f"Found {len(all_gages)} gages in folder")
     logger.debug(f"getting simulation start and end time")
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
     logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
 
-    for wb_id, gage in wb_gage_pairs:
+    for gage, wb_id in all_gages.items():
         logger.debug(f"Processing {gage}")
         logger.debug(f"Downloading USGS data for {gage}")
         cache_path = folder_to_eval / "nwisiv_cache.sqlite"
         service = IVDataService(cache_filename=cache_path)
         usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
+        if usgs_data.empty:
+            logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
+            service._restclient.close()
+            continue
         service._restclient.close()
         logger.debug(f"Downloaded USGS data for {gage}")
         logger.debug(f"Downloading NWM data for {gage}")
