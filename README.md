@@ -1,0 +1,2 @@
+# Please don't use this
+If you've found this, it's a throw-away prototype to help with planning. Don't expect anything other than random numbers to come out of it. I haven't spent any time making this efficient or properly validating correctness, please don't use this as is or even as a reference. The gage_to_feature_id.py map is "correct" as far as the nwm output is stored in s3 zarrs, but I have not verified that those features are correct for those gages.
