@@ -7,7 +7,7 @@ RUN dnf install python3 python3-pip -y
 COPY . /ngiab_eval
 
 # Install the application
-RUN pip3 install /ngiab_eval
+RUN pip3 install /ngiab_eval[plot]
 
 # Run the application
 ENTRYPOINT ["python3","-m","ngiab_eval","-i","/ngen/ngen/data"]

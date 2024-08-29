@@ -125,10 +125,9 @@ def plot_streamflow(output_folder, df, gage):
         import seaborn as sns
         import matplotlib.pyplot as plt
     except ImportError:
-        logger.error(
-            "seaborn and matplotlib are required to plot streamflow, pip install ngiab_eval[plot]"
+        raise ImportError(
+            "Seaborn and matplotlib are required for plotting, please pip install ngiab_eval[plot]"
         )
-        return
 
     sns.set_style("whitegrid")
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -184,9 +183,6 @@ if __name__ == "__main__":
         exit(1)
     folder_to_eval = Path(args.input_file)
     logger.debug("Starting main.py")
-    # folder_to_eval = Path("/home/josh/ngiab_preprocess_output/gage-10154200")
-
-    # get gages in folder, flowpath_attributes.rl_gages
     logger.debug("Getting gages from hydrofabric")
     wb_gage_pairs = get_gages_from_hydrofabric(folder_to_eval)
     gages = [pair[1] for pair in wb_gage_pairs]
@@ -195,13 +191,12 @@ if __name__ == "__main__":
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
     logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
 
-    logger.info("Downloaded NWM output")
     for wb_id, gage in wb_gage_pairs:
         logger.debug(f"Processing {gage}")
         logger.debug(f"Downloading USGS data for {gage}")
         cache_path = folder_to_eval / "nwisiv_cache.sqlite"
         service = IVDataService(cache_filename=cache_path)
-        usgs_data = service.get(sites=gage, startDT="2010-01-01", endDT="2010-01-10")
+        usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
         service._restclient.close()
         logger.debug(f"Downloaded USGS data for {gage}")
         logger.debug(f"Downloading NWM data for {gage}")
@@ -237,13 +232,13 @@ if __name__ == "__main__":
 
         write_output(folder_to_eval, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
 
-        logger.debug("plotting streamflow")
-        if args.plot:
-            plot_streamflow(folder_to_eval, new_df, gage)
-
         if args.debug:
             debug_output = folder_to_eval / "eval" / "debug"
             debug_output.mkdir(exist_ok=True)
             new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
+
+        logger.debug("plotting streamflow")
+        if args.plot:
+            plot_streamflow(folder_to_eval, new_df, gage)
 
         logger.info(f"Finished processing {gage}")
