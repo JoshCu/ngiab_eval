@@ -60,4 +60,4 @@ jobs:
         push: true
         tags: |
           ${{ secrets.DOCKERHUB_USERNAME }}/ngiab_eval:latest
-        #   ${{ secrets.DOCKERHUB_USERNAME }}/ngiab_eval:${{ github.event.release.tag_name }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/ngiab_eval:${{ github.event.release.tag_name }}
