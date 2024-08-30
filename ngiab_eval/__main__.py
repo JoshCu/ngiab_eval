@@ -4,6 +4,7 @@ import s3fs
 import xarray as xr
 import logging
 from dask.distributed import Client, LocalCluster
+from distributed.utils import silence_logging_cmgr
 from pathlib import Path
 import pandas as pd
 import glob
@@ -15,6 +16,10 @@ from colorama import Fore, Style, init
 from ngiab_eval.output_formatter import write_output
 from ngiab_eval.gage_to_feature_id import feature_ids
 import argparse
+import warnings
+
+# we check this ourselves and log a warning so we can silence thisz
+warnings.filterwarnings("ignore", message="No data was returned by the request.")
 
 # Initialize colorama
 init(autoreset=True)
@@ -47,8 +52,13 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
 
-    logger.debug("Returning dataset")
-    return dataset.compute()
+    logger.debug("Computing dataset")
+
+    dataset.compute()
+    with silence_logging_cmgr(logging.CRITICAL):
+        client.shutdown()
+
+    return dataset
 
 
 def get_gages_from_hydrofabric(folder_to_eval):
@@ -111,23 +121,33 @@ class ColoredFormatter(logging.Formatter):
         return message
 
 
-def setup_logging() -> None:
+def setup_logging(debug: bool = False) -> None:
     """Set up logging configuration with green formatting."""
     handler = logging.StreamHandler()
-    handler.setFormatter(
-        ColoredFormatter("%(asctime)s - %(levelname)s - %(funcName)s - %(message)s")
-    )
+    date_fmt = "%H:%M:%S"
+    str_format = "%(asctime)s - %(levelname)s - %(message)s"
+    if debug:
+        str_format = "%(asctime)s - %(levelname)s - %(funcName)s - %(message)s"
+        date_fmt += ",%(msecs)02d"
+    handler.setFormatter(ColoredFormatter(str_format, date_fmt))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 def plot_streamflow(output_folder, df, gage):
     try:
         import seaborn as sns
+        import matplotlib
+
+        # use Agg backend for headless plotting
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         raise ImportError(
             "Seaborn and matplotlib are required for plotting, please pip install ngiab_eval[plot]"
         )
+    plot_folder = Path(output_folder) / "eval" / "plots"
+    plot_folder.mkdir(exist_ok=True, parents=True)
+    output_image = plot_folder / f"gage-{gage}_streamflow.png"
 
     sns.set_style("whitegrid")
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -138,12 +158,8 @@ def plot_streamflow(output_folder, df, gage):
     ax.set(title=f"Streamflow for {gage}", xlabel="Time", ylabel="Streamflow (m³ s⁻¹)")
     ax.legend(title="Source")
     plt.xticks(rotation=45, ha="right")
-
     plt.tight_layout()
-
-    plot_folder = Path(output_folder) / "eval" / "plots"
-    plot_folder.mkdir(exist_ok=True, parents=True)
-    plt.savefig(plot_folder / f"gage-{gage}_streamflow.png")
+    plt.savefig(output_image)
     plt.close(fig)
 
 
@@ -176,14 +192,14 @@ def parse_arguments() -> argparse.Namespace:
 if __name__ == "__main__":
     setup_logging()
     args = parse_arguments()
+    logger.info("Starting evaluation")
     if args.debug:
         logger.setLevel(logging.DEBUG)
     if not args.input_file:
         logger.error("No input file provided")
         exit(1)
     folder_to_eval = Path(args.input_file)
-    logger.debug("Starting main.py")
-    logger.debug("Getting gages from hydrofabric")
+    logger.info("Getting gages from hydrofabric")
     wb_gage_pairs = get_gages_from_hydrofabric(folder_to_eval)
     all_gages = {}
     for wb_id, g in wb_gage_pairs:
@@ -191,14 +207,13 @@ if __name__ == "__main__":
         for gage in gages:
             all_gages[gage] = wb_id
 
-    logger.info(f"Found {len(all_gages)} gages in folder")
+    logger.info(f"Found {len(all_gages)} gages in the hydrofabric")
     logger.debug(f"getting simulation start and end time")
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
     logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
 
     for gage, wb_id in all_gages.items():
-        logger.debug(f"Processing {gage}")
-        logger.debug(f"Downloading USGS data for {gage}")
+        logger.info(f"Downloading USGS data for {gage}")
         cache_path = folder_to_eval / "nwisiv_cache.sqlite"
         service = IVDataService(cache_filename=cache_path)
         usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
@@ -207,11 +222,10 @@ if __name__ == "__main__":
             service._restclient.close()
             continue
         service._restclient.close()
-        logger.debug(f"Downloaded USGS data for {gage}")
-        logger.debug(f"Downloading NWM data for {gage}")
+        logger.info(f"Downloading NWM data for {gage}")
         nwm_data = download_nwm_output(gage, start_time, end_time)
         logger.debug(f"Downloaded NWM data for {gage}")
-        logger.debug(f"Getting simulation output for {gage}")
+        logger.info(f"Getting simulation output for {gage}")
         simulation_output = get_simulation_output(wb_id, folder_to_eval)
         logger.debug(f"Got simulation output for {gage}")
         logger.debug(f"Merging simulation and gage data for {gage}")
@@ -233,7 +247,7 @@ if __name__ == "__main__":
         new_df.columns = ["time", "NGEN", "USGS", "NWM"]
         # convert USGS to cms
         new_df["USGS"] = new_df["USGS"] * 0.0283168
-        logger.debug(f"Calculating NSE and KGE for {gage}")
+        logger.info(f"Calculating NSE and KGE for {gage}")
         nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
         ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
         nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
@@ -246,8 +260,9 @@ if __name__ == "__main__":
             debug_output.mkdir(exist_ok=True)
             new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
 
-        logger.debug("plotting streamflow")
         if args.plot:
+            logger.info(f"plotting streamflow for {gage}")
             plot_streamflow(folder_to_eval, new_df, gage)
 
         logger.info(f"Finished processing {gage}")
+    logger.info("Finished evaluation")
