@@ -95,8 +95,7 @@ def get_simulation_output(wb_id, folder_to_eval):
 
     # convert the time column to datetime
     merged["current_time"] = pd.to_datetime(merged["current_time"])
-    # convert the flow to cms
-    merged["flow"] = merged["flow"] * 0.0283168
+
     return merged
 
 
@@ -112,12 +111,15 @@ def get_simulation_start_end_time(folder_to_eval):
 class ColoredFormatter(logging.Formatter):
     def format(self, record):
         message = super().format(record)
+        message = message.replace("<module>", "main")
+        time = message.split(" - ")[0] + " - "
+        rest_of_message = " - ".join(message.split(" - ")[1:])
         if record.levelno == logging.DEBUG:
-            return f"{Fore.BLUE}{message}{Style.RESET_ALL}"
+            return f"{time}{Fore.BLUE}{rest_of_message}{Style.RESET_ALL}"
         if record.levelno == logging.WARNING:
-            return f"{Fore.YELLOW}{message}{Style.RESET_ALL}"
+            return f"{time}{Fore.YELLOW}{rest_of_message}{Style.RESET_ALL}"
         if record.levelno == logging.INFO:
-            return f"{Fore.GREEN}{message}{Style.RESET_ALL}"
+            return f"{time}{Fore.GREEN}{rest_of_message}{Style.RESET_ALL}"
         return message
 
 
@@ -125,10 +127,10 @@ def setup_logging(debug: bool = False) -> None:
     """Set up logging configuration with green formatting."""
     handler = logging.StreamHandler()
     date_fmt = "%H:%M:%S"
-    str_format = "%(asctime)s - %(levelname)s - %(message)s"
+    str_format = "%(asctime)s - %(levelname)7s - %(message)s"
     if debug:
-        str_format = "%(asctime)s - %(levelname)s - %(funcName)s - %(message)s"
-        date_fmt += ",%(msecs)02d"
+        str_format = "%(asctime)s,%(msecs)02d - %(levelname)7s - %(funcName)s - %(message)s"
+
     handler.setFormatter(ColoredFormatter(str_format, date_fmt))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
@@ -190,8 +192,8 @@ def parse_arguments() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    setup_logging()
     args = parse_arguments()
+    setup_logging(args.debug)
     logger.info("Starting evaluation")
     if args.debug:
         logger.setLevel(logging.DEBUG)
