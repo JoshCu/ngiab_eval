@@ -210,17 +210,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-if __name__ == "__main__":
-    args = parse_arguments()
-    setup_logging(args.debug)
-    logger.info("Starting evaluation")
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
-    if not args.input_file:
-        logger.error("No input file provided")
-        exit(1)
-
-    folder_to_eval = Path(args.input_file)
+def evaluate_folder(folder_to_eval: Path):
     if not folder_to_eval.exists():
         logger.error(f"Folder {folder_to_eval} does not exist")
         exit(1)
@@ -295,3 +285,17 @@ if __name__ == "__main__":
 
         logger.info(f"Finished processing {gage}")
     logger.info("Finished evaluation")
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    setup_logging(args.debug)
+    logger.info("Starting evaluation")
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    if not args.input_file:
+        logger.error("No input file provided")
+        exit(1)
+
+    folder_to_eval = Path(args.input_file)
+    evaluate_folder(folder_to_eval)
