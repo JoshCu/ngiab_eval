@@ -30,27 +30,28 @@ class KGE:
 class results:
     kge: KGE
     nse: float
+    pbias: float
 
-    def __init__(self, kge_output: np.ndarray, nse_output: np.ndarray):
+    def __init__(self, kge_output: np.ndarray, nse_output: np.ndarray, pbias_output: np.ndarray):
         self.kge = KGE(kge_output)
         self.nse = nse_output[0]
+        self.pbias = pbias_output[0]
 
 
 def create_output_folders(output_folder):
     output_folder = Path(output_folder)
-    eval_folder = output_folder / "eval"
-    json_folder = eval_folder / "json"
+    json_folder = output_folder / "json"
     # plot_folder = eval_folder / "plots"
-    folders = [output_folder, eval_folder, json_folder]
+    folders = [output_folder, json_folder]
     for folder in folders:
         folder.mkdir(exist_ok=True)
 
 
-def write_output(output_folder, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge):
+def write_output(output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias):
     create_output_folders(output_folder)
     output = {}
-    output["ngen"] = results(ngen_kge, ngen_nse)
-    output["nwm"] = results(nwm_kge, nwm_nse)
-    output_file = Path(output_folder) / "eval" / "json" / f"gage-{gage}_results.json"
+    output["ngen"] = results(ngen_kge, ngen_nse, ngen_pbias)
+    output["nwm"] = results(nwm_kge, nwm_nse, nwm_pbias)
+    output_file = Path(output_folder) / "json" / f"gage-{gage}_results.json"
     with open(output_file, "w") as f:
         f.write(json.dumps(output, cls=EnhancedJSONEncoder, indent=4))

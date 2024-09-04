@@ -271,8 +271,12 @@ def evaluate_folder(folder_to_eval: Path):
         ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
         nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
         ngen_kge = he.evaluator(he.kge, new_df["NGEN"], new_df["USGS"])
+        nwm_pbias = he.evaluator(he.pbias, new_df["NWM"], new_df["USGS"])
+        ngen_pbias = he.evaluator(he.pbias, new_df["NGEN"], new_df["USGS"])
 
-        write_output(folder_to_eval, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
+        write_output(
+            eval_output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias
+        )
 
         if args.debug:
             debug_output = eval_output_folder / "debug"
