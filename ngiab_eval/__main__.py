@@ -18,7 +18,7 @@ from ngiab_eval.gage_to_feature_id import feature_ids
 import argparse
 import warnings
 
-# we check this ourselves and log a warning so we can silence thisz
+# we check this ourselves and log a warning so we can silence this
 warnings.filterwarnings("ignore", message="No data was returned by the request.")
 
 # Initialize colorama
@@ -51,14 +51,33 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
 
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
-
     logger.debug("Computing dataset")
 
-    dataset.compute()
     with silence_logging_cmgr(logging.CRITICAL):
         client.shutdown()
 
     return dataset
+
+
+def check_local_cache(gage, start_time, end_time, cache_folder: Path = Path(".")) -> xr.Dataset:
+    # check if the data is already in the cache
+    # if it is, return it
+    # if it is not, download it and return it
+    cached_file = cache_folder / f"{gage}_{start_time}_{end_time}.nc"
+
+    if not cache_folder.exists():
+        cache_folder.mkdir(exist_ok=True, parents=True)
+
+    if cached_file.exists():
+        dataset = xr.open_dataset(cached_file)
+    else:
+        dataset = download_nwm_output(gage, start_time, end_time)
+        dataset.to_netcdf(cached_file)
+        dataset = xr.open_dataset(cached_file)
+
+    df = zip(dataset.time.values, dataset.streamflow.values)
+    time_series = pd.DataFrame(df, columns=["time", "streamflow"])
+    return time_series
 
 
 def get_gages_from_hydrofabric(folder_to_eval):
@@ -200,7 +219,15 @@ if __name__ == "__main__":
     if not args.input_file:
         logger.error("No input file provided")
         exit(1)
+
     folder_to_eval = Path(args.input_file)
+    if not folder_to_eval.exists():
+        logger.error(f"Folder {folder_to_eval} does not exist")
+        exit(1)
+
+    eval_output_folder = folder_to_eval / "eval"
+    eval_output_folder.mkdir(exist_ok=True)
+
     logger.info("Getting gages from hydrofabric")
     wb_gage_pairs = get_gages_from_hydrofabric(folder_to_eval)
     all_gages = {}
@@ -216,7 +243,7 @@ if __name__ == "__main__":
 
     for gage, wb_id in all_gages.items():
         logger.info(f"Downloading USGS data for {gage}")
-        cache_path = folder_to_eval / "nwisiv_cache.sqlite"
+        cache_path = eval_output_folder / "nwisiv_cache.sqlite"
         service = IVDataService(cache_filename=cache_path)
         usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
         if usgs_data.empty:
@@ -225,7 +252,9 @@ if __name__ == "__main__":
             continue
         service._restclient.close()
         logger.info(f"Downloading NWM data for {gage}")
-        nwm_data = download_nwm_output(gage, start_time, end_time)
+        nwm_data = check_local_cache(
+            gage, start_time, end_time, cache_folder=eval_output_folder / "nwm_cache"
+        )
         logger.debug(f"Downloaded NWM data for {gage}")
         logger.info(f"Getting simulation output for {gage}")
         simulation_output = get_simulation_output(wb_id, folder_to_eval)
@@ -239,9 +268,7 @@ if __name__ == "__main__":
             how="inner",
         )
         logger.debug(f"Merged in nwm data for {gage}")
-        new_df = pd.merge(
-            new_df, nwm_data.to_dataframe(), left_on="current_time", right_on="time", how="inner"
-        )
+        new_df = pd.merge(new_df, nwm_data, left_on="current_time", right_on="time", how="inner")
         logger.debug(f"Merging complete for {gage}")
         new_df = new_df.dropna()
         # drop everything except the columns we want
@@ -258,7 +285,7 @@ if __name__ == "__main__":
         write_output(folder_to_eval, gage, nwm_nse, nwm_kge, ngen_nse, ngen_kge)
 
         if args.debug:
-            debug_output = folder_to_eval / "eval" / "debug"
+            debug_output = eval_output_folder / "debug"
             debug_output.mkdir(exist_ok=True)
             new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
 
