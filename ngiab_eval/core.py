@@ -99,22 +99,24 @@ def get_gages_from_hydrofabric(folder_to_eval):
 
 
 def get_simulation_output(wb_id, folder_to_eval):
-    csv_files = folder_to_eval / "outputs" / "troute" / "*.csv"
+    nc_file = folder_to_eval / "outputs" / "troute" / "*.nc"
+    # find the nc file
+    nc_files = glob.glob(str(nc_file))
+    if len(nc_files) == 0:
+        logger.error("No netcdf file found in the outputs/troute folder")
+        exit(1)
+    if len(nc_files) > 1:
+        logger.error("Multiple netcdf files found in the outputs/troute folder")
+        exit(1)
+    if len(nc_files) == 1:
+        all_output = xr.open_dataset(nc_files[0])
+    print(all_output)
     id_stem = wb_id.split("-")[1]
-
-    # read every csv file filter out featureID == id_stem, then merge using time as the key
-    csv_files = glob.glob(str(csv_files))
-    dfs = []
-    for file in csv_files:
-        temp_df = pd.read_csv(file)
-        temp_df = temp_df[temp_df["featureID"] == int(id_stem)]
-        dfs.append(temp_df)
-    merged = pd.concat(dfs)
-
-    # convert the time column to datetime
-    merged["current_time"] = pd.to_datetime(merged["current_time"])
-
-    return merged
+    gage_output = all_output.sel(feature_id=int(id_stem))
+    gage_output = gage_output.drop_vars(["type", "velocity", "depth", "nudge", "feature_id"])
+    gage_output = gage_output.to_dataframe()
+    print(gage_output)
+    return gage_output.reset_index()
 
 
 def get_simulation_start_end_time(folder_to_eval):
@@ -226,17 +228,18 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
         new_df = pd.merge(
             simulation_output,
             usgs_data,
-            left_on="current_time",
+            left_on="time",
             right_on="value_time",
             how="inner",
         )
         logger.debug(f"Merged in nwm data for {gage}")
-        new_df = pd.merge(new_df, nwm_data, left_on="current_time", right_on="time", how="inner")
+        new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
         logger.debug(f"Merging complete for {gage}")
         new_df = new_df.dropna()
         # drop everything except the columns we want
-        new_df = new_df[["current_time", "flow", "value", "streamflow"]]
+        new_df = new_df[["time", "flow", "value", "streamflow"]]
         new_df.columns = ["time", "NGEN", "USGS", "NWM"]
+        print(new_df)
         # convert USGS to cms
         new_df["USGS"] = new_df["USGS"] * 0.0283168
         logger.info(f"Calculating NSE and KGE for {gage}")
