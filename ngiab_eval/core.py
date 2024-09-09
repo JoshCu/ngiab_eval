@@ -103,13 +103,15 @@ def get_simulation_output(wb_id, folder_to_eval):
     # find the nc file
     nc_files = glob.glob(str(nc_file))
     if len(nc_files) == 0:
-        logger.error("No netcdf file found in the outputs/troute folder")
-        exit(1)
+        raise FileNotFoundError("No netcdf file found in the outputs/troute folder")
     if len(nc_files) > 1:
-        logger.error("Multiple netcdf files found in the outputs/troute folder")
-        exit(1)
+        logger.warning("Multiple netcdf files found in the outputs/troute folder")
+        logger.warning("Using the most recent file")
+        nc_files.sort(key=os.path.getmtime)
+        file_to_open = nc_files[-1]
     if len(nc_files) == 1:
-        all_output = xr.open_dataset(nc_files[0])
+        file_to_open = nc_files[0]
+    all_output = xr.open_dataset(file_to_open)
     print(all_output)
     id_stem = wb_id.split("-")[1]
     gage_output = all_output.sel(feature_id=int(id_stem))
@@ -187,8 +189,7 @@ def plot_streamflow(output_folder, df, gage):
 
 def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = False) -> None:
     if not folder_to_eval.exists():
-        logger.error(f"Folder {folder_to_eval} does not exist")
-        exit(1)
+        raise FileNotFoundError(f"Folder {folder_to_eval} does not exist")
 
     eval_output_folder = folder_to_eval / "eval"
     eval_output_folder.mkdir(exist_ok=True)
