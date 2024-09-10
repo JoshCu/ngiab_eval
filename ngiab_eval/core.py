@@ -16,6 +16,8 @@ from colorama import Fore, Style, init
 from ngiab_eval.output_formatter import write_output
 from ngiab_eval.gage_to_feature_id import feature_ids
 import warnings
+import multiprocessing
+from functools import partial
 
 # we check this ourselves and log a warning so we can silence this
 warnings.filterwarnings("ignore", message="No data was returned by the request.")
@@ -30,11 +32,7 @@ logger.setLevel(logging.INFO)
 def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     """Load zarr datasets from S3 within the specified time range."""
     # if a LocalCluster is not already running, start one
-    try:
-        Client.current()
-    except ValueError:
-        cluster = LocalCluster()
-        client = Client(cluster)
+
     logger.debug("Creating s3fs object")
     store = s3fs.S3Map(
         f"s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
@@ -51,9 +49,6 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
     logger.debug("Computing dataset")
-
-    with silence_logging_cmgr(logging.CRITICAL):
-        client.shutdown()
 
     return dataset
 
@@ -187,6 +182,76 @@ def plot_streamflow(output_folder, df, gage):
     plt.close(fig)
 
 
+def evaluate_gage(
+    gage_wb_pair,
+    cache_path,
+    start_time,
+    end_time,
+    folder_to_eval,
+    eval_output_folder,
+    plot=False,
+    debug=False,
+):
+    service = IVDataService(cache_filename=cache_path)
+    gage = gage_wb_pair[0]
+    wb_id = gage_wb_pair[1]
+    logger.info(f"Downloading USGS data for {gage}")
+    usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
+    if usgs_data.empty:
+        logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
+        service._restclient.close()
+        return
+    service._restclient.close()
+    logger.info(f"Downloading NWM data for {gage}")
+    nwm_data = check_local_cache(
+        gage, start_time, end_time, cache_folder=eval_output_folder / "nwm_cache"
+    )
+    logger.debug(f"Downloaded NWM data for {gage}")
+    logger.info(f"Getting simulation output for {gage}")
+    simulation_output = get_simulation_output(wb_id, folder_to_eval)
+    logger.debug(f"Got simulation output for {gage}")
+    logger.debug(f"Merging simulation and gage data for {gage}")
+    new_df = pd.merge(
+        simulation_output,
+        usgs_data,
+        left_on="time",
+        right_on="value_time",
+        how="inner",
+    )
+    logger.debug(f"Merged in nwm data for {gage}")
+    new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
+    logger.debug(f"Merging complete for {gage}")
+    new_df = new_df.dropna()
+    # drop everything except the columns we want
+    new_df = new_df[["time", "flow", "value", "streamflow"]]
+    new_df.columns = ["time", "NGEN", "USGS", "NWM"]
+    print(new_df)
+    # convert USGS to cms
+    new_df["USGS"] = new_df["USGS"] * 0.0283168
+    logger.info(f"Calculating NSE and KGE for {gage}")
+    nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
+    ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
+    nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
+    ngen_kge = he.evaluator(he.kge, new_df["NGEN"], new_df["USGS"])
+    nwm_pbias = he.evaluator(he.pbias, new_df["NWM"], new_df["USGS"])
+    ngen_pbias = he.evaluator(he.pbias, new_df["NGEN"], new_df["USGS"])
+
+    write_output(
+        eval_output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias
+    )
+
+    if debug:
+        debug_output = eval_output_folder / "debug"
+        debug_output.mkdir(exist_ok=True)
+        new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
+
+    if plot:
+        logger.info(f"plotting streamflow for {gage}")
+        plot_streamflow(folder_to_eval, new_df, gage)
+
+    logger.info(f"Finished processing {gage}")
+
+
 def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = False) -> None:
     if not folder_to_eval.exists():
         raise FileNotFoundError(f"Folder {folder_to_eval} does not exist")
@@ -206,63 +271,19 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
     logger.debug(f"getting simulation start and end time")
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
     logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
+    cache_path = eval_output_folder / "nwisiv_cache.sqlite"
 
-    for gage, wb_id in all_gages.items():
-        logger.info(f"Downloading USGS data for {gage}")
-        cache_path = eval_output_folder / "nwisiv_cache.sqlite"
-        service = IVDataService(cache_filename=cache_path)
-        usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
-        if usgs_data.empty:
-            logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
-            service._restclient.close()
-            continue
-        service._restclient.close()
-        logger.info(f"Downloading NWM data for {gage}")
-        nwm_data = check_local_cache(
-            gage, start_time, end_time, cache_folder=eval_output_folder / "nwm_cache"
-        )
-        logger.debug(f"Downloaded NWM data for {gage}")
-        logger.info(f"Getting simulation output for {gage}")
-        simulation_output = get_simulation_output(wb_id, folder_to_eval)
-        logger.debug(f"Got simulation output for {gage}")
-        logger.debug(f"Merging simulation and gage data for {gage}")
-        new_df = pd.merge(
-            simulation_output,
-            usgs_data,
-            left_on="time",
-            right_on="value_time",
-            how="inner",
-        )
-        logger.debug(f"Merged in nwm data for {gage}")
-        new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
-        logger.debug(f"Merging complete for {gage}")
-        new_df = new_df.dropna()
-        # drop everything except the columns we want
-        new_df = new_df[["time", "flow", "value", "streamflow"]]
-        new_df.columns = ["time", "NGEN", "USGS", "NWM"]
-        print(new_df)
-        # convert USGS to cms
-        new_df["USGS"] = new_df["USGS"] * 0.0283168
-        logger.info(f"Calculating NSE and KGE for {gage}")
-        nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
-        ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
-        nwm_kge = he.evaluator(he.kge, new_df["NWM"], new_df["USGS"])
-        ngen_kge = he.evaluator(he.kge, new_df["NGEN"], new_df["USGS"])
-        nwm_pbias = he.evaluator(he.pbias, new_df["NWM"], new_df["USGS"])
-        ngen_pbias = he.evaluator(he.pbias, new_df["NGEN"], new_df["USGS"])
+    evaluate_gage_partial = partial(
+        evaluate_gage,
+        cache_path=cache_path,
+        start_time=start_time,
+        end_time=end_time,
+        folder_to_eval=folder_to_eval,
+        eval_output_folder=eval_output_folder,
+        plot=plot,
+        debug=debug,
+    )
+    with multiprocessing.Pool() as pool:
+        pool.map(evaluate_gage_partial, all_gages.items())
 
-        write_output(
-            eval_output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias
-        )
-
-        if debug:
-            debug_output = eval_output_folder / "debug"
-            debug_output.mkdir(exist_ok=True)
-            new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
-
-        if plot:
-            logger.info(f"plotting streamflow for {gage}")
-            plot_streamflow(folder_to_eval, new_df, gage)
-
-        logger.info(f"Finished processing {gage}")
     logger.info("Finished evaluation")
