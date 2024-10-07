@@ -13,7 +13,7 @@ import numpy as np
 from hydrotools.nwis_client import IVDataService
 import hydroeval as he
 from colorama import Fore, Style, init
-from ngiab_eval.output_formatter import write_output
+from ngiab_eval.output_formatter import write_output, write_streamflow_to_sqlite
 from ngiab_eval.gage_to_feature_id import feature_ids
 import warnings
 import multiprocessing
@@ -240,10 +240,11 @@ def evaluate_gage(
         eval_output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias
     )
 
-    if debug:
-        debug_output = eval_output_folder / "debug"
-        debug_output.mkdir(exist_ok=True)
-        new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
+
+    debug_output = eval_output_folder / "debug"
+    debug_output.mkdir(exist_ok=True)
+    new_df.to_csv(debug_output / f"streamflow_at_{gage}.csv")
+    write_streamflow_to_sqlite(new_df, gage, eval_output_folder)
 
     if plot:
         logger.info(f"plotting streamflow for {gage}")

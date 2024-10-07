@@ -3,6 +3,7 @@ import dataclasses
 import numpy as np
 import json
 from pathlib import Path
+import sqlite3
 
 
 class EnhancedJSONEncoder(json.JSONEncoder):
@@ -41,7 +42,6 @@ class results:
 def create_output_folders(output_folder):
     output_folder = Path(output_folder)
     json_folder = output_folder / "json"
-    # plot_folder = eval_folder / "plots"
     folders = [output_folder, json_folder]
     for folder in folders:
         folder.mkdir(exist_ok=True)
@@ -55,3 +55,18 @@ def write_output(output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, nge
     output_file = Path(output_folder) / "json" / f"gage-{gage}_results.json"
     with open(output_file, "w") as f:
         f.write(json.dumps(output, cls=EnhancedJSONEncoder, indent=4))
+    write_to_sqlite(output_folder, output, gage)
+
+def write_to_sqlite(output_folder,  output, gage):
+    # add results to a table called stats
+    # gage_id, source, kge, kge_r, kge_a, kge_b, nse, pbias
+    database = Path(output_folder) / "streamflow.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS stats (gage_id TEXT, source TEXT, kge REAL, kge_r REAL, kge_a REAL, kge_b REAL, nse REAL, pbias REAL)")
+        conn.execute("INSERT INTO stats VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (gage, "ngen", output["ngen"].kge.kge, output["ngen"].kge.r, output["ngen"].kge.a, output["ngen"].kge.b, output["ngen"].nse, output["ngen"].pbias))
+        conn.execute("INSERT INTO stats VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (gage, "nwm", output["nwm"].kge.kge, output["nwm"].kge.r, output["nwm"].kge.a, output["nwm"].kge.b, output["nwm"].nse, output["nwm"].pbias))
+
+def write_streamflow_to_sqlite(df, gage, output_folder):
+    database = Path(output_folder) / "streamflow.db"
+    with sqlite3.connect(database) as conn:
+        df.to_sql(f"{gage}", conn, if_exists="replace", index=False)

@@ -49,4 +49,4 @@ if __name__ == "__main__":
         exit(1)
 
     folder_to_eval = Path(args.input_file)
-    evaluate_folder(folder_to_eval, args.debug, args.plot)
+    evaluate_folder(folder_to_eval, args.plot, args.debug)
