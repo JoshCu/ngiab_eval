@@ -3,7 +3,7 @@ import os
 import s3fs
 import xarray as xr
 import logging
-from dask.distributed import Client, LocalCluster
+from dask.distributed import Client, LocalCluster, progress
 from distributed.utils import silence_logging_cmgr
 from pathlib import Path
 import pandas as pd
@@ -49,6 +49,7 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
     logger.debug("Computing dataset")
+    logger.debug("Dataset: %s", dataset)
 
     return dataset
 
@@ -58,6 +59,10 @@ def check_local_cache(gage, start_time, end_time, cache_folder: Path = Path(".")
     # if it is, return it
     # if it is not, download it and return it
     cached_file = cache_folder / f"{gage}_{start_time}_{end_time}.nc"
+    temp_file = cache_folder / f"{gage}_{start_time}_{end_time}_downloading.nc"
+
+    if temp_file.exists():
+        temp_file.unlink()
 
     if not cache_folder.exists():
         cache_folder.mkdir(exist_ok=True, parents=True)
@@ -66,7 +71,14 @@ def check_local_cache(gage, start_time, end_time, cache_folder: Path = Path(".")
         dataset = xr.open_dataset(cached_file)
     else:
         dataset = download_nwm_output(gage, start_time, end_time)
-        dataset.to_netcdf(cached_file)
+        client = Client.current()
+        logger.debug("client fetched")
+        future = client.compute(dataset.to_netcdf(temp_file, compute=False))
+        logger.debug("future created")
+        # Display progress bar
+        progress(future)
+        future.result()
+        temp_file.rename(cached_file)
         dataset = xr.open_dataset(cached_file)
 
     df = zip(dataset.time.values, dataset.streamflow.values)
@@ -140,17 +152,6 @@ class ColoredFormatter(logging.Formatter):
         return message
 
 
-def setup_logging(debug: bool = False) -> None:
-    """Set up logging configuration with green formatting."""
-    handler = logging.StreamHandler()
-    date_fmt = "%H:%M:%S"
-    str_format = "%(asctime)s - %(levelname)7s - %(message)s"
-    if debug:
-        str_format = "%(asctime)s,%(msecs)02d - %(levelname)7s - %(funcName)s - %(message)s"
-
-    handler.setFormatter(ColoredFormatter(str_format, date_fmt))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
-
 
 def plot_streamflow(output_folder, df, gage):
     try:
@@ -182,6 +183,12 @@ def plot_streamflow(output_folder, df, gage):
     plt.close(fig)
 
 
+def get_usgs_data(gage, start_time, end_time, cache_path):
+    service = IVDataService(cache_filename=cache_path)
+    logger.info(f"Downloading USGS data for {gage}")
+    usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
+    return usgs_data
+
 def evaluate_gage(
     gage_wb_pair,
     cache_path,
@@ -192,16 +199,12 @@ def evaluate_gage(
     plot=False,
     debug=False,
 ):
-    service = IVDataService(cache_filename=cache_path)
     gage = gage_wb_pair[0]
     wb_id = gage_wb_pair[1]
-    logger.info(f"Downloading USGS data for {gage}")
-    usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
+    usgs_data = get_usgs_data(gage, start_time, end_time, cache_path)
     if usgs_data.empty:
         logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
-        service._restclient.close()
         return
-    service._restclient.close()
     logger.info(f"Downloading NWM data for {gage}")
     nwm_data = check_local_cache(
         gage, start_time, end_time, cache_folder=eval_output_folder / "nwm_cache"
@@ -257,6 +260,10 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
     if not folder_to_eval.exists():
         raise FileNotFoundError(f"Folder {folder_to_eval} does not exist")
 
+    if debug:
+        global logger
+        logger.setLevel(logging.DEBUG)
+
     eval_output_folder = folder_to_eval / "eval"
     eval_output_folder.mkdir(exist_ok=True)
 
@@ -284,7 +291,14 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
         plot=plot,
         debug=debug,
     )
-    with multiprocessing.Pool() as pool:
-        pool.map(evaluate_gage_partial, all_gages.items())
+
+    try:
+        client = Client.current()
+    except ValueError:
+        cluster = LocalCluster()
+        client = Client(cluster)
+
+    for gage in all_gages.items():
+        evaluate_gage_partial(gage)
 
     logger.info("Finished evaluation")
