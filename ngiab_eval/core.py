@@ -8,6 +8,7 @@ from distributed.utils import silence_logging_cmgr
 from pathlib import Path
 import pandas as pd
 import glob
+import time
 import json
 import numpy as np
 from hydrotools.nwis_client import IVDataService
@@ -204,6 +205,7 @@ def evaluate_gage(
     usgs_data = get_usgs_data(gage, start_time, end_time, cache_path)
     if usgs_data.empty:
         logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
+        time.sleep(2)
         return
     logger.info(f"Downloading NWM data for {gage}")
     nwm_data = check_local_cache(
