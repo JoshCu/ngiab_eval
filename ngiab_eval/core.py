@@ -101,7 +101,7 @@ def get_gages_from_hydrofabric(folder_to_eval):
 
     with sqlite3.connect(gpkg_file) as conn:
         results = conn.execute(
-            "SELECT id, rl_gages FROM flowpath_attributes WHERE rl_gages IS NOT NULL"
+            "SELECT id, gage FROM 'flowpath-attributes' WHERE gage IS NOT NULL"
         ).fetchall()
     return results
 
@@ -151,7 +151,6 @@ class ColoredFormatter(logging.Formatter):
         if record.levelno == logging.INFO:
             return f"{time}{Fore.GREEN}{rest_of_message}{Style.RESET_ALL}"
         return message
-
 
 
 def plot_streamflow(output_folder, df, gage):
