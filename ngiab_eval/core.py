@@ -274,7 +274,8 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
     for wb_id, g in wb_gage_pairs:
         gages = g.split(",")
         for gage in gages:
-            all_gages[gage] = wb_id
+            if gage in feature_ids:
+                all_gages[gage] = wb_id
 
     logger.info(f"Found {len(all_gages)} gages in the hydrofabric")
     logger.debug(f"getting simulation start and end time")
