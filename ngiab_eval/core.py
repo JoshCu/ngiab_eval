@@ -1,24 +1,23 @@
-import sqlite3
+import glob
+import json
+import logging
 import os
+import sqlite3
+import time
+import warnings
+from functools import partial
+from pathlib import Path
+
+import hydroeval as he
+import pandas as pd
 import s3fs
 import xarray as xr
-import logging
-from dask.distributed import Client, LocalCluster, progress
-from distributed.utils import silence_logging_cmgr
-from pathlib import Path
-import pandas as pd
-import glob
-import time
-import json
-import numpy as np
-from hydrotools.nwis_client import IVDataService
-import hydroeval as he
 from colorama import Fore, Style, init
-from ngiab_eval.output_formatter import write_output, write_streamflow_to_sqlite
+from dask.distributed import Client, LocalCluster, progress
+from hydrotools.nwis_client import IVDataService
+
 from ngiab_eval.gage_to_feature_id import feature_ids
-import warnings
-import multiprocessing
-from functools import partial
+from ngiab_eval.output_formatter import write_output, write_streamflow_to_sqlite
 
 # we check this ourselves and log a warning so we can silence this
 warnings.filterwarnings("ignore", message="No data was returned by the request.")
@@ -36,7 +35,7 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
 
     logger.debug("Creating s3fs object")
     store = s3fs.S3Map(
-        f"s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
+        "s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
         s3=s3fs.S3FileSystem(anon=True),
     )
 
@@ -155,8 +154,8 @@ class ColoredFormatter(logging.Formatter):
 
 def plot_streamflow(output_folder, df, gage):
     try:
-        import seaborn as sns
         import matplotlib
+        import seaborn as sns
 
         # use Agg backend for headless plotting
         matplotlib.use("Agg")
@@ -189,6 +188,7 @@ def get_usgs_data(gage, start_time, end_time, cache_path):
     usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
     return usgs_data
 
+
 def evaluate_gage(
     gage_wb_pair,
     cache_path,
@@ -206,11 +206,12 @@ def evaluate_gage(
         logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
         time.sleep(2)
         return
-    logger.info(f"Downloading NWM data for {gage}")
-    nwm_data = check_local_cache(
-        gage, start_time, end_time, cache_folder=eval_output_folder / "nwm_cache"
-    )
-    logger.debug(f"Downloaded NWM data for {gage}")
+    if gage in feature_ids:
+        logger.info(f"Downloading NWM data for {gage}")
+        nwm_data = check_local_cache(
+            gage, start_time, end_time, cache_folder=eval_output_folder / "nwm_cache"
+        )
+        logger.debug(f"Downloaded NWM data for {gage}")
     logger.info(f"Getting simulation output for {gage}")
     simulation_output = get_simulation_output(wb_id, folder_to_eval)
     logger.debug(f"Got simulation output for {gage}")
@@ -223,7 +224,12 @@ def evaluate_gage(
         how="inner",
     )
     logger.debug(f"Merged in nwm data for {gage}")
-    new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
+    if gage in feature_ids:
+        new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
+    else:
+        # add a streamflow column
+        new_df["streamflow"] = 0.0
+
     logger.debug(f"Merging complete for {gage}")
     new_df = new_df.dropna()
     # drop everything except the columns we want
@@ -243,7 +249,6 @@ def evaluate_gage(
     write_output(
         eval_output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias
     )
-
 
     debug_output = eval_output_folder / "debug"
     debug_output.mkdir(exist_ok=True)
@@ -274,11 +279,10 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
     for wb_id, g in wb_gage_pairs:
         gages = g.split(",")
         for gage in gages:
-            if gage in feature_ids:
-                all_gages[gage] = wb_id
-
+            # if gage in feature_ids:
+            all_gages[gage] = wb_id
     logger.info(f"Found {len(all_gages)} gages in the hydrofabric")
-    logger.debug(f"getting simulation start and end time")
+    logger.debug("getting simulation start and end time")
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
     logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
     cache_path = eval_output_folder / "nwisiv_cache.sqlite"
