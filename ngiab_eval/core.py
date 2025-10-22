@@ -224,7 +224,7 @@ def evaluate_gage(
         how="inner",
     )
     logger.debug(f"Merged in nwm data for {gage}")
-    if gage in feature_ids:
+    if gage in feature_ids and len(nwm_data) > 0:
         new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
     else:
         # add a streamflow column
