@@ -221,21 +221,27 @@ def evaluate_gage(
         usgs_data,
         left_on="time",
         right_on="value_time",
-        how="inner",
+        how="left",
     )
     logger.debug(f"Merged in nwm data for {gage}")
     if gage in feature_ids and len(nwm_data) > 0:
-        new_df = pd.merge(new_df, nwm_data, left_on="time", right_on="time", how="inner")
+        new_df = pd.merge(
+            new_df, nwm_data, left_on="time", right_on="time", how="left"
+        )  # Changed to "outer"
     else:
         # add a streamflow column
         new_df["streamflow"] = 0.0
-
     logger.debug(f"Merging complete for {gage}")
-    new_df = new_df.dropna()
+
+    # Fill NaN values with 0 only for numeric columns
+    numeric_columns = new_df.select_dtypes(include=[np.number]).columns.tolist()
+    new_df[numeric_columns] = new_df[numeric_columns].fillna(0)
+
     # drop everything except the columns we want
     new_df = new_df[["time", "flow", "value", "streamflow"]]
     new_df.columns = ["time", "NGEN", "USGS", "NWM"]
     print(new_df)
+
     # convert USGS to cms
     new_df["USGS"] = new_df["USGS"] * 0.0283168
     logger.info(f"Calculating NSE and KGE for {gage}")

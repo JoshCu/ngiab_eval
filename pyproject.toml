@@ -12,8 +12,8 @@ include-package-data = true
 
 [project]
 name = "ngiab_eval"
-#version = "0.1.2"
-dynamic = ["version"]
+version = "0.1.6"
+# dynamic = ["version"]
 authors = [{ name = "Josh Cunningham", email = "jcunningham8@ua.edu" }]
 description = "Basic KGE and NSE evaluation for the NGIAB project"
 readme = "README.md"
