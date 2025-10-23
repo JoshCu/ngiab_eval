@@ -216,34 +216,51 @@ def evaluate_gage(
     simulation_output = get_simulation_output(wb_id, folder_to_eval)
     logger.debug(f"Got simulation output for {gage}")
     logger.debug(f"Merging simulation and gage data for {gage}")
-    new_df = pd.merge(
-        simulation_output,
-        usgs_data,
+
+    # Start with simulation output as the base - keep only its timestamps
+    new_df = simulation_output[["time", "flow"]].copy()
+
+    usgs_data_hourly = usgs_data[usgs_data["value_time"].dt.minute == 0].copy()
+
+    # Merge USGS data - left join to keep only simulation times
+    usgs_merge = pd.merge(
+        new_df[["time"]],  # Only use time column for merge
+        usgs_data_hourly[["value_time", "value"]],  # Only keep needed columns
         left_on="time",
         right_on="value_time",
         how="left",
     )
-    logger.debug(f"Merged in nwm data for {gage}")
+    new_df["value"] = usgs_merge["value"].fillna(0)  # Fill missing with 0
+
+    logger.debug(f"Merged in USGS data for {gage}")
+
+    # Merge NWM data if available
     if gage in feature_ids and len(nwm_data) > 0:
-        new_df = pd.merge(
-            new_df, nwm_data, left_on="time", right_on="time", how="left"
-        )  # Changed to "outer"
+        nwm_merge = pd.merge(
+            new_df[["time"]],  # Only use time column for merge
+            nwm_data[["time", "streamflow"]],  # Only keep needed columns
+            on="time",
+            how="left",
+        )
+        new_df["streamflow"] = nwm_merge["streamflow"].fillna(0)  # Fill missing with 0
     else:
-        # add a streamflow column
+        # add a streamflow column with zeros
         new_df["streamflow"] = 0.0
     logger.debug(f"Merging complete for {gage}")
 
-    # Fill NaN values with 0 only for numeric columns
-    numeric_columns = new_df.select_dtypes(include=[np.number]).columns.tolist()
-    new_df[numeric_columns] = new_df[numeric_columns].fillna(0)
-
-    # drop everything except the columns we want
+    # Select and rename columns
     new_df = new_df[["time", "flow", "value", "streamflow"]]
     new_df.columns = ["time", "NGEN", "USGS", "NWM"]
+
+    # Fill any remaining NaN values with 0
+    new_df["USGS"] = new_df["USGS"].fillna(0)
+    new_df["NWM"] = new_df["NWM"].fillna(0)
+
     print(new_df)
 
     # convert USGS to cms
     new_df["USGS"] = new_df["USGS"] * 0.0283168
+
     logger.info(f"Calculating NSE and KGE for {gage}")
     nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
     ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
