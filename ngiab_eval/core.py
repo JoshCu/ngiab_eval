@@ -90,7 +90,7 @@ def check_local_cache(gage, start_time, end_time, cache_folder: Path = Path(".")
 def get_gages_from_hydrofabric(folder_to_eval):
     # search inside the folder for _subset.gpkg recursively
     gpkg_file = None
-    for file in Path(folder_to_eval).rglob("_subset.gpkg"):
+    for file in Path(folder_to_eval).rglob("*_subset.gpkg"):
         gpkg_file = file
         break
     # exception for hydromorph
