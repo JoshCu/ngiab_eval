@@ -12,12 +12,12 @@ include-package-data = true
 
 [project]
 name = "ngiab_eval"
-version = "0.1.6"
+version = "0.2.0"
 # dynamic = ["version"]
 authors = [{ name = "Josh Cunningham", email = "jcunningham8@ua.edu" }]
 description = "Basic KGE and NSE evaluation for the NGIAB project"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -29,10 +29,10 @@ dependencies = [
     "dask[distributed]==2024.4.1",
     "s3fs==2024.3.1",
     "zarr==2.17.1",
-    "hydrotools-nwis-client>=4.1.0",
     "hydroeval",
     "netcdf4",
     "colorama",
+    "hydrotools-waterdata-client>=0.9.0b0",
 ]
 
 [project.optional-dependencies]

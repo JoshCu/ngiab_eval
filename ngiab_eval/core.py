@@ -14,7 +14,8 @@ import s3fs
 import xarray as xr
 from colorama import Fore, Style, init
 from dask.distributed import Client, LocalCluster, progress
-from hydrotools.nwis_client import IVDataService
+from hydrotools.waterdata_client import ContinuousClient
+from hydrotools.waterdata_client.transformers import to_dataframe
 
 from ngiab_eval.gage_to_feature_id import feature_ids
 from ngiab_eval.output_formatter import write_output, write_streamflow_to_sqlite
@@ -89,11 +90,13 @@ def check_local_cache(gage, start_time, end_time, cache_folder: Path = Path(".")
 def get_gages_from_hydrofabric(folder_to_eval):
     # search inside the folder for _subset.gpkg recursively
     gpkg_file = None
-    for root, dirs, files in os.walk(folder_to_eval):
-        for file in files:
-            if file.endswith("_subset.gpkg"):
-                gpkg_file = os.path.join(root, file)
-                break
+    for file in Path(folder_to_eval).rglob("_subset.gpkg"):
+        gpkg_file = file
+        break
+    # exception for hydromorph
+    for file in Path(folder_to_eval).rglob("original.gpkg"):
+        gpkg_file = file
+        break
 
     if gpkg_file is None:
         raise FileNotFoundError("No subset.gpkg file found in folder")
@@ -183,10 +186,40 @@ def plot_streamflow(output_folder, df, gage):
 
 
 def get_usgs_data(gage, start_time, end_time, cache_path):
-    service = IVDataService(cache_filename=cache_path)
+    client = ContinuousClient(transformer=to_dataframe)
+    site_id = f"USGS-{gage}"
     logger.info(f"Downloading USGS data for {gage}")
-    usgs_data = service.get(sites=gage, startDT=start_time, endDT=end_time)
-    return usgs_data
+    # Retrieve data using datetime handling
+    try:
+        observations = client.get(
+            monitoring_location_id=site_id,
+            limit=50_000,
+            parameter_code="00060",  # Volumetric streamflow in ft^3/s
+            # Strings are passed directly to the API without intervention. See the API
+            #   documentation for more information about valid string formats (RFC 3339).
+            # datetime="2025-05-03T12:00:00-05:00/2025-05-05T00:00:00-05:00",
+            # Retrieve the last 6 hours using pandas.Timedelta
+            datetime=[pd.Timestamp(start_time), pd.Timestamp(end_time)],
+            # Retrieve a specific datetime using pandas.Timestamp
+            #   Timezone naive objects are assumed to be UTC.
+            # datetime=pd.Timestamp("2010-01-01"),
+            # Timezone aware types are converted to UTC before retrieval.
+            # datetime=pd.Timestamp("2010-01-01", tzinfo=ZoneInfo("America/Chicago")),
+            # Retrieve using a standard datetime object
+            # datetime=datetime(2026, 1, 1, 0, 30, 0),
+            # Retrieve using a standard timedelta object
+            # datetime=timedelta(hours=6),
+            # Use a list of datetime objects to specify a bounded interval [start, end]
+            # datetime=[pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-02")],
+            # Specify a half-bounded interval using None
+            # datetime=[pd.Timestamp("2026-05-01"), None],
+        )
+    except Exception:  # throws a custom error that I'm not importing
+        logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
+        return pd.DataFrame()
+    # cast value_time to datetime, they are strings in UTC
+    observations["value_time"] = pd.to_datetime(observations["value_time"])
+    return observations
 
 
 def evaluate_gage(
@@ -203,8 +236,7 @@ def evaluate_gage(
     wb_id = gage_wb_pair[1]
     usgs_data = get_usgs_data(gage, start_time, end_time, cache_path)
     if usgs_data.empty:
-        logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
-        time.sleep(2)
+        time.sleep(1)
         return
     if gage in feature_ids:
         logger.info(f"Downloading NWM data for {gage}")
@@ -220,7 +252,11 @@ def evaluate_gage(
     # Start with simulation output as the base - keep only its timestamps
     new_df = simulation_output[["time", "flow"]].copy()
 
+    # cast time to datetime, they are strings in UTC
+    new_df["time"] = pd.to_datetime(new_df["time"])
+
     usgs_data_hourly = usgs_data[usgs_data["value_time"].dt.minute == 0].copy()
+    usgs_data_hourly["value_time"] = usgs_data_hourly["value_time"].dt.tz_convert(None)
 
     # Merge USGS data - left join to keep only simulation times
     usgs_merge = pd.merge(
@@ -236,6 +272,9 @@ def evaluate_gage(
 
     # Merge NWM data if available
     if gage in feature_ids and len(nwm_data) > 0:
+        # cast time to datetime, they are strings in UTC
+        nwm_data["time"] = pd.to_datetime(nwm_data["time"])
+
         nwm_merge = pd.merge(
             new_df[["time"]],  # Only use time column for merge
             nwm_data[["time", "streamflow"]],  # Only keep needed columns
@@ -259,7 +298,7 @@ def evaluate_gage(
     print(new_df)
 
     # convert USGS to cms
-    new_df["USGS"] = new_df["USGS"] * 0.0283168
+    new_df["USGS"] = pd.to_numeric(new_df["USGS"], errors="coerce").fillna(0) * 0.0283168
 
     logger.info(f"Calculating NSE and KGE for {gage}")
     nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
