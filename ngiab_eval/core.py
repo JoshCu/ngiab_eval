@@ -5,6 +5,7 @@ import os
 import sqlite3
 import time
 import warnings
+from datetime import timedelta
 from functools import partial
 from pathlib import Path
 
@@ -14,8 +15,8 @@ import s3fs
 import xarray as xr
 from colorama import Fore, Style, init
 from dask.distributed import Client, LocalCluster, progress
-from hydrotools.waterdata_client import ContinuousClient
-from hydrotools.waterdata_client.transformers import to_dataframe
+from dataretrieval import nwis
+from dataretrieval.exceptions import DataRetrievalError
 
 from ngiab_eval.gage_to_feature_id import feature_ids
 from ngiab_eval.output_formatter import write_output, write_streamflow_to_sqlite
@@ -45,7 +46,9 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
 
     # select the feature_id
     logger.debug("Selecting feature_id")
-    dataset = dataset.sel(time=slice(start_time, end_time), feature_id=feature_ids[gage])
+    dataset = dataset.sel(
+        time=slice(start_time, end_time), feature_id=feature_ids[gage]
+    )
 
     # drop everything except coordinates feature_id, gage_id, time and variables streamflow
     dataset = dataset[["streamflow"]]
@@ -55,7 +58,9 @@ def download_nwm_output(gage, start_time, end_time) -> xr.Dataset:
     return dataset
 
 
-def check_local_cache(gage, start_time, end_time, cache_folder: Path = Path(".")) -> xr.Dataset:
+def check_local_cache(
+    gage, start_time, end_time, cache_folder: Path = Path(".")
+) -> xr.Dataset:
     # check if the data is already in the cache
     # if it is, return it
     # if it is not, download it and return it
@@ -125,7 +130,9 @@ def get_simulation_output(wb_id, folder_to_eval):
     print(all_output)
     id_stem = wb_id.split("-")[1]
     gage_output = all_output.sel(feature_id=int(id_stem))
-    gage_output = gage_output.drop_vars(["type", "velocity", "depth", "nudge", "feature_id"])
+    gage_output = gage_output.drop_vars(
+        ["type", "velocity", "depth", "nudge", "feature_id"]
+    )
     gage_output = gage_output.to_dataframe()
     print(gage_output)
     return gage_output.reset_index()
@@ -185,41 +192,79 @@ def plot_streamflow(output_folder, df, gage):
     plt.close(fig)
 
 
-def get_usgs_data(gage, start_time, end_time, cache_path):
-    client = ContinuousClient(transformer=to_dataframe)
-    site_id = f"USGS-{gage}"
+def get_usgs_data(gage: str, start_time, end_time, cache_folder: Path) -> pd.DataFrame:
+    """Hourly USGS streamflow in m^3/s with columns Time (UTC, tz-naive) and values.
+
+    Returns an empty DataFrame if the gage has no discharge data in the window.
+    """
+    start = pd.Timestamp(start_time)
+    end = pd.Timestamp(end_time)
+    cache_folder.mkdir(parents=True, exist_ok=True)
+    output_path = cache_folder / f"usgs_{gage}_{start:%Y%m%d%H}_{end:%Y%m%d%H}.pkl"
+    if output_path.exists():
+        return pd.read_pickle(output_path)
+
+    # NWIS interprets dates in the site's local time, so pad by a day either side
+    adjusted_start = (start - timedelta(days=1)).strftime("%Y-%m-%d")
+    adjusted_end = (end + timedelta(days=1)).strftime("%Y-%m-%d")
+
     logger.info(f"Downloading USGS data for {gage}")
-    # Retrieve data using datetime handling
-    try:
-        observations = client.get(
-            monitoring_location_id=site_id,
-            limit=50_000,
-            parameter_code="00060",  # Volumetric streamflow in ft^3/s
-            # Strings are passed directly to the API without intervention. See the API
-            #   documentation for more information about valid string formats (RFC 3339).
-            # datetime="2025-05-03T12:00:00-05:00/2025-05-05T00:00:00-05:00",
-            # Retrieve the last 6 hours using pandas.Timedelta
-            datetime=[pd.Timestamp(start_time), pd.Timestamp(end_time)],
-            # Retrieve a specific datetime using pandas.Timestamp
-            #   Timezone naive objects are assumed to be UTC.
-            # datetime=pd.Timestamp("2010-01-01"),
-            # Timezone aware types are converted to UTC before retrieval.
-            # datetime=pd.Timestamp("2010-01-01", tzinfo=ZoneInfo("America/Chicago")),
-            # Retrieve using a standard datetime object
-            # datetime=datetime(2026, 1, 1, 0, 30, 0),
-            # Retrieve using a standard timedelta object
-            # datetime=timedelta(hours=6),
-            # Use a list of datetime objects to specify a bounded interval [start, end]
-            # datetime=[pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-02")],
-            # Specify a half-bounded interval using None
-            # datetime=[pd.Timestamp("2026-05-01"), None],
-        )
-    except Exception:  # throws a custom error that I'm not importing
+    dfo_usgs = nwis.get_record(
+        sites=gage, service="iv", start=adjusted_start, end=adjusted_end
+    )
+    # discharge is usually "00060", but sites with multiple sensors get a suffix
+    flow_columns = [
+        c for c in dfo_usgs.columns if c.startswith("00060") and not c.endswith("_cd")
+    ]
+    if not flow_columns:
         logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
         return pd.DataFrame()
-    # cast value_time to datetime, they are strings in UTC
-    observations["value_time"] = pd.to_datetime(observations["value_time"])
-    return observations
+
+    dfo_usgs.index = pd.DatetimeIndex(dfo_usgs.index)
+    dfo_usgs["Time"] = dfo_usgs.index.floor("h")  # type: ignore
+    # NWIS uses -999999 for missing / ice affected values, real negative flows
+    # (tidal, backwater) are kept
+    flows = dfo_usgs[flow_columns].apply(pd.to_numeric, errors="coerce")
+    flows = flows.where(flows != -999999)
+    # if there are several sensors use the one with the most data in the window
+    in_window = (flows.index >= start.tz_localize("UTC")) & (
+        flows.index <= end.tz_localize("UTC")
+    )
+    dfo_usgs["00060"] = flows[flows[in_window].count().idxmax()]
+    dfo_usgs_hr = dfo_usgs.groupby("Time")["00060"].mean().reset_index()
+    dfo_usgs_hr["values"] = dfo_usgs_hr["00060"] / 35.3147
+    dfo_usgs_hr = dfo_usgs_hr[["Time", "values"]]
+    dfo_usgs_hr["Time"] = pd.to_datetime(dfo_usgs_hr["Time"]).dt.tz_convert(None)
+
+    # Insert any hours with no observations over the whole simulation window
+    # so gaps at the start / end are detected and interior gaps get interpolated
+    dfo_usgs_hr = dfo_usgs_hr.set_index("Time")
+    full_index = pd.date_range(start.floor("h"), end.floor("h"), freq="h", name="Time")
+    dfo_usgs_hr = dfo_usgs_hr.reindex(full_index).reset_index()
+
+    if dfo_usgs_hr["values"].isna().all():
+        logger.warning(f"No data found for {gage} between {start_time} and {end_time}")
+        return pd.DataFrame()
+
+    # Find the longest run of consecutive missing hours
+    missing = dfo_usgs_hr["values"].isna()
+    run_ids = (missing != missing.shift()).cumsum()
+    gap_lengths = missing.groupby(run_ids).sum()
+    longest_gap = int(gap_lengths.max()) if missing.any() else 0
+    if longest_gap > 0:
+        gap_start = dfo_usgs_hr.loc[run_ids == gap_lengths.idxmax(), "Time"].iloc[0]
+        message = (
+            f"USGS site {gage}: {missing.sum()} missing hours, "
+            f"longest gap is {longest_gap} hours starting at {gap_start}"
+        )
+        logger.warning(message)
+
+    dfo_usgs_hr["values"] = dfo_usgs_hr["values"].interpolate(
+        method="linear", limit_direction="both"
+    )
+    dfo_usgs_hr.to_pickle(output_path)
+    dfo_usgs_hr.to_csv(output_path.with_suffix(".csv"))
+    return dfo_usgs_hr
 
 
 def evaluate_gage(
@@ -234,7 +279,12 @@ def evaluate_gage(
 ):
     gage = gage_wb_pair[0]
     wb_id = gage_wb_pair[1]
-    usgs_data = get_usgs_data(gage, start_time, end_time, cache_path)
+    try:
+        usgs_data = get_usgs_data(gage, start_time, end_time, cache_path)
+    except DataRetrievalError as e:
+        logger.warning(f"Skipping {gage}: {e}")
+        time.sleep(1)
+        return
     if usgs_data.empty:
         time.sleep(1)
         return
@@ -255,18 +305,15 @@ def evaluate_gage(
     # cast time to datetime, they are strings in UTC
     new_df["time"] = pd.to_datetime(new_df["time"])
 
-    usgs_data_hourly = usgs_data[usgs_data["value_time"].dt.minute == 0].copy()
-    usgs_data_hourly["value_time"] = usgs_data_hourly["value_time"].dt.tz_convert(None)
-
     # Merge USGS data - left join to keep only simulation times
     usgs_merge = pd.merge(
         new_df[["time"]],  # Only use time column for merge
-        usgs_data_hourly[["value_time", "value"]],  # Only keep needed columns
+        usgs_data[["Time", "values"]],  # already hourly, m^3/s
         left_on="time",
-        right_on="value_time",
+        right_on="Time",
         how="left",
     )
-    new_df["value"] = usgs_merge["value"].fillna(0)  # Fill missing with 0
+    new_df["value"] = usgs_merge["values"].fillna(0)  # Fill missing with 0
 
     logger.debug(f"Merged in USGS data for {gage}")
 
@@ -297,9 +344,6 @@ def evaluate_gage(
 
     print(new_df)
 
-    # convert USGS to cms
-    new_df["USGS"] = pd.to_numeric(new_df["USGS"], errors="coerce").fillna(0) * 0.0283168
-
     logger.info(f"Calculating NSE and KGE for {gage}")
     nwm_nse = he.evaluator(he.nse, new_df["NWM"], new_df["USGS"])
     ngen_nse = he.evaluator(he.nse, new_df["NGEN"], new_df["USGS"])
@@ -309,7 +353,14 @@ def evaluate_gage(
     ngen_pbias = he.evaluator(he.pbias, new_df["NGEN"], new_df["USGS"])
 
     write_output(
-        eval_output_folder, gage, nwm_nse, nwm_kge, nwm_pbias, ngen_nse, ngen_kge, ngen_pbias
+        eval_output_folder,
+        gage,
+        nwm_nse,
+        nwm_kge,
+        nwm_pbias,
+        ngen_nse,
+        ngen_kge,
+        ngen_pbias,
     )
 
     debug_output = eval_output_folder / "debug"
@@ -324,7 +375,9 @@ def evaluate_gage(
     logger.info(f"Finished processing {gage}")
 
 
-def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = False) -> None:
+def evaluate_folder(
+    folder_to_eval: Path, plot: bool = False, debug: bool = False
+) -> None:
     if not folder_to_eval.exists():
         raise FileNotFoundError(f"Folder {folder_to_eval} does not exist")
 
@@ -347,7 +400,7 @@ def evaluate_folder(folder_to_eval: Path, plot: bool = False, debug: bool = Fals
     logger.debug("getting simulation start and end time")
     start_time, end_time = get_simulation_start_end_time(folder_to_eval)
     logger.info(f"Simulation start time: {start_time}, end time: {end_time}")
-    cache_path = eval_output_folder / "nwisiv_cache.sqlite"
+    cache_path = eval_output_folder / "usgs_cache"
 
     evaluate_gage_partial = partial(
         evaluate_gage,
